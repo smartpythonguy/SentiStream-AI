@@ -9,7 +9,7 @@ Usage (VS Code / terminal):
     python backend/rss_fetcher.py
 
 Or import into your pipeline:
-    from backend.rss_fetcher import fetch_articles
+    from rss_fetcher import fetch_articles
     articles = fetch_articles("AI", sources=["bbc", "techcrunch"])
 """
 
@@ -206,7 +206,7 @@ def fetch_articles(
             - link      (str)
 
     Example:
-        >>> from backend.rss_fetcher import fetch_articles
+        >>> from rss_fetcher import fetch_articles
         >>> articles = fetch_articles("machine learning", sources=["bbc", "techcrunch"])
         >>> for a in articles:
         ...     print(a["headline"], "|", a["source"])

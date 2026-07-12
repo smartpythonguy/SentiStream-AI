@@ -10,7 +10,7 @@ calls. It handles:
     4. Returning the final report dict
 
 Usage:
-    from backend.analyzer import SentimentAnalyzer
+    from analyzer import SentimentAnalyzer
 
     analyzer = SentimentAnalyzer(use_mock=False)   # real Reddit
     report   = analyzer.analyze("electric vehicles")
@@ -20,12 +20,12 @@ Usage:
 
 import logging
 
-from backend.config       import cfg
-from backend.cleaner      import TextCleaner
-from backend.model_loader import ModelLoader
-from backend.predictor    import Predictor
-from backend.aggregator   import SentimentAggregator
-from backend.reddit_fetcher import RedditFetcher, MockRedditFetcher
+from config       import cfg
+from cleaner      import TextCleaner
+from model_loader import ModelLoader
+from predictor    import Predictor
+from aggregator   import SentimentAggregator
+from reddit_fetcher import RedditFetcher, MockRedditFetcher
 
 log = logging.getLogger("SentiStream.analyzer")
 

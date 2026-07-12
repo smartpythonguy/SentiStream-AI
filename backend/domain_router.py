@@ -15,16 +15,16 @@ from collections import Counter
 from typing import Dict, List, Tuple
 
 # ── Local Backend Imports ──────────────────────────────────────────
-from backend.cleaner import TextCleaner, download_nltk_resources
-from backend.live_data_fetcher import fetch_for_domain
-from backend.predictor import Predictor
-from backend.restaurant_fetcher import fetch_restaurant_data
-from backend.product_review_analyzer import (
+from cleaner import TextCleaner, download_nltk_resources
+from live_data_fetcher import fetch_for_domain
+from predictor import Predictor
+from restaurant_fetcher import fetch_restaurant_data
+from product_review_analyzer import (
     extract_pros_and_complaints,
     generate_human_opinion,
     scrub_metadata
 )
-from backend.report_visualizer import generate_sentiment_report
+from report_visualizer import generate_sentiment_report
 
 # ── Setup ──────────────────────────────────────────────────────────
 logging.getLogger("SentiStream").setLevel(logging.WARNING)

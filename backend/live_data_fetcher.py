@@ -55,7 +55,7 @@ def fetch_for_domain(domain_key: str, topic: str, max_results: int = 40) -> List
     # PRODUCTS → REDDIT
     if domain_key == "2":
 
-        from backend.reddit_fetcher import fetch_reddit_posts
+        from reddit_fetcher import fetch_reddit_posts
 
         posts = fetch_reddit_posts(topic)
 

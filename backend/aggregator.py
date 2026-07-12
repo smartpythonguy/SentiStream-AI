@@ -11,7 +11,7 @@ Produces:
     - Raw counts
 
 Usage:
-    from backend.aggregator import SentimentAggregator
+    from aggregator import SentimentAggregator
     agg    = SentimentAggregator()
     report = agg.aggregate(items_with_predictions)
 """
