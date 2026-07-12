@@ -1,0 +1,27 @@
+# SentiStream AI — Backend Dependencies
+# ──────────────────────────────────────
+# Install with:
+#   pip install -r requirements.txt
+
+# Core ML + data
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+
+# NLP preprocessing
+nltk>=3.8.0
+
+# Web framework
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Reddit API client (free)
+praw>=7.7.0
+
+# HTTP requests (for live data fetchers)
+requests>=2.31.0
+
+# Environment variable loader (reads .env file)
+python-dotenv>=1.0.0
+
+feedparser>=6.0.11
