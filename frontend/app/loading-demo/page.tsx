@@ -1,21 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { AILoadingScreen } from "@/components/ai-loading-screen";
 import { Button } from "@/components/ui/button";
 
-export default function LoadingDemoPage() {
+function LoadingContent() {
   const [showLoading, setShowLoading] = useState(true);
 
   return (
     <div className="min-h-screen bg-background">
       {showLoading && <AILoadingScreen />}
-      
+
       <div className="flex min-h-screen flex-col items-center justify-center gap-6 p-8">
-        <h1 className="text-3xl font-bold text-foreground">Loading Screen Demo</h1>
+        <h1 className="text-3xl font-bold text-foreground">
+          Loading Screen Demo
+        </h1>
+
         <p className="text-muted-foreground">
           Click the button below to toggle the AI loading screen
         </p>
+
         <Button
           onClick={() => setShowLoading(!showLoading)}
           className="bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90"
@@ -24,5 +28,13 @@ export default function LoadingDemoPage() {
         </Button>
       </div>
     </div>
+  );
+}
+
+export default function LoadingDemoPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <LoadingContent />
+    </Suspense>
   );
 }
