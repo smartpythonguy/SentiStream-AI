@@ -1,0 +1,54 @@
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+
+venv/
+.venv/
+
+# Environment
+.env
+.env.*
+
+# ========================
+# Node.js
+# ========================
+node_modules/
+.next/
+out/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Model Cache
+hf_cache/
+
+# Temporary
+*.tmp
+# Large datasets
+amazon_dataset.csv
+
+# Optional training files (uncomment if you don't want to upload them)
+# train_model.py
+# train_product_model.py
