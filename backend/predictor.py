@@ -22,8 +22,8 @@ import re
 from functools import lru_cache
 from typing import Dict, List
 
-from backend.model_loader import ModelLoader
-from backend.cleaner import TextCleaner, download_nltk_resources
+from model_loader import ModelLoader
+from cleaner import TextCleaner, download_nltk_resources
 
 log = logging.getLogger("SentiStream.predictor")
 
