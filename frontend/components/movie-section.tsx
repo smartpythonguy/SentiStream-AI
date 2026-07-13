@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Clapperboard,
@@ -14,17 +13,6 @@ import {
   DollarSign,
   TrendingUp,
   ExternalLink,
-  Loader2,
-  Users,
-  Award,
-  AlertCircle,
-  BookOpen,
-  Music,
-  Video,
-  CheckCircle2,
-  XCircle,
-  Baby,
-  Eye,
   MessageSquare,
   Calendar,
   Clock,
@@ -353,111 +341,16 @@ interface MovieAIOverviewProps {
   dominantSentiment: string;
 }
 
-// ── AI Overview structured response type ──────────────────────────────
-interface MovieOverviewData {
-  overview: string;         // full 4–6 sentence paragraph
-  worthWatching: string;    // direct one-line recommendation
-  whoShouldWatch: string;   // who should watch
-  isUpcoming: boolean;
-  previousParts: string[];
-  upcomingNote?: string;
-  // Legacy fields kept for fallback compatibility
-  recommendation?: string;
-  story?: string;
-  acting?: string;
-  direction?: string;
-  visuals?: string;
-  music?: string;
-  pacing?: string;
-  audienceOpinion?: string;
-  criticsOpinion?: string;
-  finalVerdict?: string;
-}
-
 function MovieAIOverview({
   topic,
   aiSummary,
-  pros,
-  cons,
-  positiveCount,
-  negativeCount,
-  neutralCount,
-  total,
-  dominantSentiment,
 }: MovieAIOverviewProps) {
-  const [overview, setOverview] = useState<MovieOverviewData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-
-    const posPct = total > 0 ? Math.round((positiveCount / total) * 100) : 0;
-    const negPct = total > 0 ? Math.round((negativeCount / total) * 100) : 0;
-    const neuPct = total > 0 ? Math.round((neutralCount  / total) * 100) : 0;
-
-    const praised = pros.slice(0, 3).join(", ") || "";
-    const criticised = cons.slice(0, 2).join(", ") || "";
-    const prompt = `Write a 4–5 sentence human overview of "${topic}" that reads like a recommendation from a knowledgeable friend — not an analytics report, not a review score summary.
-
-Context clues (use only what's relevant, never cite numbers or percentages):
-- What audiences loved: ${praised || "not specified"}
-- What audiences disliked: ${criticised || "not specified"}
-- Background/plot: ${aiSummary || "use your own knowledge"}
-
-Cover naturally in ONE flowing paragraph:
-1. What it's about and what kind of experience it is
-2. Why people enjoy it (tone, standout elements)
-3. Any notable weakness, briefly
-4. Who should watch it
-5. A direct "worth watching" verdict
-
-RULES: No bullet points. No numbers or review counts. No "X% of reviewers". No analytics language. Write like you're texting a friend. Address the reader as "you".
-If it's a sequel, briefly mention the series. If unreleased, say so warmly.
-
-Return ONLY valid JSON (no markdown, no backticks):
-{"overview":"full 4–5 sentence paragraph","worthWatching":"one direct verdict line","whoShouldWatch":"one line","isUpcoming":false,"previousParts":[],"upcomingNote":""}`;
-
-    fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 900,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        const text = (data.content || []).map((b: any) => b.text || "").join("").trim();
-        try {
-          const clean = text.replace(/```json|```/g, "").trim();
-          setOverview(JSON.parse(clean));
-        } catch {
-          // Fallback: treat raw text as the overview paragraph
-          setOverview({
-            overview: text || aiSummary || "",
-            worthWatching: "", whoShouldWatch: "",
-            isUpcoming: false, previousParts: [], upcomingNote: "",
-          });
-        }
-        setLoading(false);
-      })
-      .catch(() => {
-        setOverview(aiSummary ? {
-          overview: aiSummary,
-          worthWatching: "", whoShouldWatch: "",
-          isUpcoming: false, previousParts: [], upcomingNote: "",
-        } : null);
-        setError("Could not generate AI overview.");
-        setLoading(false);
-      });
-  }, [topic, aiSummary, pros, cons, positiveCount, negativeCount, neutralCount, total, dominantSentiment]);
-
-  if (!loading && !overview && !error) return null;
-
-  // No legacy section grid needed — overview is now a single paragraph
+  // Grounded overview: rendered directly from the backend review-aggregation
+  // summary (domain_router._build_movie_recommendation), which is built from
+  // the fetched reviews + real metadata. No client-side model call — it works
+  // in production and never invents facts or cites review counts.
+  const overview = (aiSummary || "").trim();
+  if (!overview) return null;
 
   return (
     <motion.div
@@ -471,345 +364,41 @@ Return ONLY valid JSON (no markdown, no backticks):
       transition={{ duration: 0.4, delay: 0.1 }}
     >
       {/* Gold top rule */}
-      <div className="absolute top-0 left-0 right-0 h-[1px]"
-        style={{ background: "linear-gradient(90deg, transparent, #c9a84c60, transparent)" }} />
+      <div
+        className="absolute top-0 left-0 right-0 h-[1px]"
+        style={{ background: "linear-gradient(90deg, transparent, #c9a84c60, transparent)" }}
+      />
 
       <div className="p-5">
         {/* Header */}
         <div className="flex items-center gap-2 mb-4">
-          <div className="p-1.5 rounded-lg" style={{ background: "linear-gradient(135deg, #8b1a1a20, #c9a84c20)" }}>
+          <div
+            className="p-1.5 rounded-lg"
+            style={{ background: "linear-gradient(135deg, #8b1a1a20, #c9a84c20)" }}
+          >
             <Sparkles className="w-3.5 h-3.5 text-[#c9a84c]" />
           </div>
           <span className="text-xs font-semibold text-[#c9a84c] uppercase tracking-widest">
             AI Movie Overview
           </span>
-          <span className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border"
-            style={{ borderColor: "#8b1a1a40", color: "#c9a84c80", background: "#8b1a1a10" }}>
-            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#c9a84c" }} />
-            Live Analysis
+          <span
+            className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border"
+            style={{ borderColor: "#8b1a1a40", color: "#c9a84c80", background: "#8b1a1a10" }}
+          >
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#c9a84c" }} />
+            Based on {topic} reviews
           </span>
         </div>
 
-        {loading ? (
-          <div className="flex items-center gap-2 py-4">
-            <Loader2 className="w-4 h-4 animate-spin text-[#c9a84c]/60" />
-            <span className="text-sm text-[#f5e6c0]/40">Writing your movie overview…</span>
-          </div>
-        ) : overview ? (
-          <div className="space-y-4">
-
-            {/* Upcoming badge + previous parts */}
-            {overview.isUpcoming && (
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border"
-                  style={{ borderColor: "#c9a84c40", background: "#c9a84c12", color: "#c9a84c" }}>
-                  <Calendar className="w-3 h-3" />
-                  Upcoming Release
-                </span>
-                {overview.previousParts && overview.previousParts.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[11px] text-[#f5e6c0]/40 uppercase tracking-widest">Previous:</span>
-                    {overview.previousParts.map((part, i) => (
-                      <a
-                        key={i}
-                        href={`https://www.google.com/search?q=${encodeURIComponent(part + " movie")}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all duration-150 hover:opacity-80 active:scale-95"
-                        style={{ borderColor: "#8b1a1a50", background: "#8b1a1a20", color: "#f5e6c0aa" }}
-                      >
-                        <Film className="w-2.5 h-2.5" />
-                        {part}
-                      </a>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            {overview.isUpcoming && overview.upcomingNote && (
-              <div className="px-4 py-3 rounded-xl border text-sm italic"
-                style={{ borderColor: "#c9a84c20", background: "#c9a84c08", color: "#f5e6c0aa" }}>
-                🎬 {overview.upcomingNote}
-              </div>
-            )}
-
-            {/* Main conversational paragraph */}
-            {(overview.overview || overview.recommendation) && (
-              <div className="px-4 py-4 rounded-xl border"
-                style={{ borderColor: "#c9a84c20", background: "#c9a84c06" }}>
-                <p className="text-sm leading-relaxed" style={{ color: "#f5e6c0dd", lineHeight: "1.75" }}>
-                  {overview.overview || overview.recommendation}
-                </p>
-              </div>
-            )}
-
-            {/* Worth Watching + Who Should Watch — side by side */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {overview.worthWatching && (
-                <div className="flex gap-3 p-4 rounded-xl border items-start"
-                  style={{ borderColor: "#4ade8025", background: "#4ade8008" }}>
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-[10px] uppercase tracking-widest text-emerald-400/60 font-semibold mb-1">Worth Watching?</p>
-                    <p className="text-sm font-semibold" style={{ color: "#4ade80cc" }}>{overview.worthWatching}</p>
-                  </div>
-                </div>
-              )}
-              {overview.whoShouldWatch && (
-                <div className="flex gap-3 p-4 rounded-xl border items-start"
-                  style={{ borderColor: "#c9a84c25", background: "#c9a84c08" }}>
-                  <Users className="w-4 h-4 text-[#c9a84c] shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-[10px] uppercase tracking-widest text-[#c9a84c]/60 font-semibold mb-1">Who Should Watch</p>
-                    <p className="text-sm font-medium" style={{ color: "#f5e6c0cc" }}>{overview.whoShouldWatch}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : error ? (
-          <p className="text-sm py-2" style={{ color: "#f5e6c0/40" }}>{aiSummary || error}</p>
-        ) : null}
-      </div>
-    </motion.div>
-  );
-}
-
-// ── Movie Insights Panel ───────────────────────────────────────────────
-
-interface MovieInsight {
-  audienceOpinion: string;
-  criticsOpinion: string;
-  bestPerformances: string;
-  weakPoints: string;
-  storyScreenplay: string;
-  musicBgm: string;
-  direction: string;
-  recommendation: string;
-  familyFriendly: boolean | null;
-  worthWatching: boolean | null;
-}
-
-function InsightRow({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div
-      className="flex gap-3 p-3.5 rounded-xl border"
-      style={{ borderColor: "#c9a84c15", background: "#c9a84c05" }}
-    >
-      <div className="shrink-0 mt-0.5">{icon}</div>
-      <div className="min-w-0">
-        <p className="text-[10px] uppercase tracking-widest text-[#c9a84c]/60 font-semibold mb-1">
-          {label}
-        </p>
-        <p className="text-sm leading-relaxed" style={{ color: "#f5e6c0cc" }}>
-          {value}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function VerdictBadge({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: boolean | null;
-  icon: React.ReactNode;
-}) {
-  const isYes = value === true;
-  const isNo = value === false;
-  return (
-    <div
-      className="flex items-center gap-3 px-4 py-3 rounded-xl border"
-      style={{
-        borderColor: isYes ? "#4ade8030" : isNo ? "#f8717130" : "#c9a84c20",
-        background: isYes ? "#4ade8008" : isNo ? "#f8717108" : "#c9a84c08",
-      }}
-    >
-      {icon}
-      <div>
-        <p className="text-[10px] uppercase tracking-widest text-[#c9a84c]/60 font-semibold leading-none mb-1">
-          {label}
-        </p>
-        <p
-          className="text-sm font-bold"
-          style={{
-            color: isYes ? "#4ade80" : isNo ? "#f87171" : "#c9a84c",
-          }}
+        {/* Conversational overview paragraph — grounded 4-5 sentence recommendation */}
+        <div
+          className="px-4 py-4 rounded-xl border"
+          style={{ borderColor: "#c9a84c20", background: "#c9a84c06" }}
         >
-          {value === null ? "Varies" : value ? "Yes" : "No"}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function MovieInsightsPanel({
-  topic,
-  aiSummary,
-  pros,
-  cons,
-  positiveCount,
-  negativeCount,
-  neutralCount,
-  total,
-  dominantSentiment,
-}: MovieAIOverviewProps) {
-  const [insights, setInsights] = useState<MovieInsight | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (total === 0) return;
-    setLoading(true);
-
-    const posPct = total > 0 ? Math.round((positiveCount / total) * 100) : 0;
-    const negPct = total > 0 ? Math.round((negativeCount / total) * 100) : 0;
-    const neuPct = total > 0 ? Math.round((neutralCount / total) * 100) : 0;
-
-    const prompt = `You are a film critic AI. Based on the review data below for "${topic}", generate a structured JSON response with these exact keys. Keep each field to 1–2 concise sentences.
-
-Review data:
-- Positive: ${positiveCount} (${posPct}%), Negative: ${negativeCount} (${negPct}%), Neutral: ${neutralCount} (${neuPct}%)
-- Overall: ${dominantSentiment}
-- Summary: ${aiSummary}
-- Loved: ${pros.join(", ") || "not specified"}
-- Disliked: ${cons.join(", ") || "not specified"}
-
-Return ONLY valid JSON (no markdown, no backticks):
-{
-  "audienceOpinion": "...",
-  "criticsOpinion": "...",
-  "bestPerformances": "...",
-  "weakPoints": "...",
-  "storyScreenplay": "...",
-  "musicBgm": "...",
-  "direction": "...",
-  "recommendation": "...",
-  "familyFriendly": true or false or null,
-  "worthWatching": true or false or null
-}`;
-
-    fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 600,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        const text = (data.content || []).map((b: any) => b.text || "").join("").trim();
-        try {
-          const clean = text.replace(/```json|```/g, "").trim();
-          setInsights(JSON.parse(clean));
-        } catch {
-          // Silently ignore parse errors
-        }
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [topic, aiSummary, pros, cons, positiveCount, negativeCount, neutralCount, total, dominantSentiment]);
-
-  if (!loading && !insights) return null;
-
-  return (
-    <motion.div
-      className="relative rounded-2xl overflow-hidden border"
-      style={{ borderColor: "#c9a84c25", background: "linear-gradient(135deg, #1a0a0a, #1c1008)" }}
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay: 0.18 }}
-    >
-      <div className="absolute top-0 left-0 right-0 h-[1px]" style={{ background: "linear-gradient(90deg, transparent, #c9a84c50, transparent)" }} />
-
-      <div className="p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="p-1.5 rounded-lg" style={{ background: "linear-gradient(135deg, #8b1a1a20, #c9a84c20)" }}>
-            <Film className="w-3.5 h-3.5 text-[#c9a84c]" />
-          </div>
-          <span className="text-xs font-semibold text-[#c9a84c] uppercase tracking-widest">
-            Movie Insights
-          </span>
+          <p className="text-sm leading-relaxed" style={{ color: "#f5e6c0dd", lineHeight: "1.75" }}>
+            {overview}
+          </p>
         </div>
-
-        {loading || !insights ? (
-          <div className="flex items-center gap-2 py-3">
-            <Loader2 className="w-4 h-4 animate-spin text-[#c9a84c]/60" />
-            <span className="text-sm text-[#f5e6c0]/40">Generating insights…</span>
-          </div>
-        ) : (
-          <>
-            {/* Verdict badges */}
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <VerdictBadge
-                label="Family Friendly"
-                value={insights.familyFriendly}
-                icon={<Baby className="w-4 h-4 text-[#c9a84c]/70" />}
-              />
-              <VerdictBadge
-                label="Worth Watching"
-                value={insights.worthWatching}
-                icon={<Eye className="w-4 h-4 text-[#c9a84c]/70" />}
-              />
-            </div>
-
-            {/* Insight rows */}
-            <div className="space-y-2">
-              <InsightRow
-                icon={<Users className="w-4 h-4 text-emerald-400/70" />}
-                label="Audience Opinion"
-                value={insights.audienceOpinion}
-              />
-              <InsightRow
-                icon={<Award className="w-4 h-4 text-amber-400/70" />}
-                label="Critics Opinion"
-                value={insights.criticsOpinion}
-              />
-              <InsightRow
-                icon={<Star className="w-4 h-4 text-amber-400/70" />}
-                label="Best Performances"
-                value={insights.bestPerformances}
-              />
-              <InsightRow
-                icon={<AlertCircle className="w-4 h-4 text-red-400/70" />}
-                label="Weak Points"
-                value={insights.weakPoints}
-              />
-              <InsightRow
-                icon={<BookOpen className="w-4 h-4 text-[#c9a84c]/70" />}
-                label="Story & Screenplay"
-                value={insights.storyScreenplay}
-              />
-              <InsightRow
-                icon={<Music className="w-4 h-4 text-purple-400/70" />}
-                label="Music & BGM"
-                value={insights.musicBgm}
-              />
-              <InsightRow
-                icon={<Video className="w-4 h-4 text-blue-400/70" />}
-                label="Direction"
-                value={insights.direction}
-              />
-              <InsightRow
-                icon={<MessageSquare className="w-4 h-4 text-[#c9a84c]/70" />}
-                label="Recommendation"
-                value={insights.recommendation}
-              />
-            </div>
-          </>
-        )}
       </div>
     </motion.div>
   );
@@ -1014,7 +603,7 @@ function CinemaHeadlineGroup({
         {headlines.map((h: any, i: number) => (
           <CinemaHeadlineCard
             key={i}
-            reviewText={h._text || h.text || ""}
+            reviewText={h._text || h.text || h.snippet || ""}
             headline={h.headline || ""}
             source={inferSource(h)}
             confidence={h.confidence || 0}
@@ -1247,7 +836,15 @@ export function MovieSection({
     seriesStatus:  movieInfo.series_status  || apiData?.series_status  || "",
   };
 
-  const isSeries = meta.mediaType === "TV Series" || meta.mediaType === "TV Mini-Series";
+  // Movie vs TV Series detection: trust an explicit media_type when present,
+  // otherwise infer "series" from series-only metadata (seasons / status).
+  const _mt = (meta.mediaType || "").toLowerCase();
+  const isSeries =
+    _mt.includes("series") ||
+    _mt.includes("tv") ||
+    _mt === "show" ||
+    (!!meta.totalSeasons && meta.totalSeasons !== "N/A") ||
+    (!!meta.seriesStatus && meta.seriesStatus !== "N/A");
 
   return (
     <div
@@ -1285,10 +882,10 @@ export function MovieSection({
         liveSentimentData={liveSentimentData}
       />
 
-      {/* 3 — AI Movie Overview */}
+      {/* 3 — AI Movie Overview (grounded in the backend review-aggregation summary) */}
       <MovieAIOverview
         topic={topic}
-        aiSummary={verdictSummary}
+        aiSummary={apiData?.ai_summary || verdictSummary}
         pros={apiData?.pros || []}
         cons={apiData?.cons || []}
         positiveCount={positiveCount}
@@ -1298,20 +895,7 @@ export function MovieSection({
         dominantSentiment={dominantSentiment}
       />
 
-      {/* 4 — Movie Insights */}
-      <MovieInsightsPanel
-        topic={topic}
-        aiSummary={verdictSummary}
-        pros={apiData?.pros || []}
-        cons={apiData?.cons || []}
-        positiveCount={positiveCount}
-        negativeCount={negativeCount}
-        neutralCount={neutralCount}
-        total={total}
-        dominantSentiment={dominantSentiment}
-      />
-
-      {/* 5 — Reviews (by sentiment) */}
+      {/* 4 — Reviews (by sentiment) */}
       {(positiveHeadlines.length > 0 ||
         negativeHeadlines.length > 0 ||
         neutralHeadlines.length > 0) && (

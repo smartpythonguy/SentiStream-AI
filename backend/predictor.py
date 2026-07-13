@@ -1,225 +1,172 @@
 """
 backend/predictor.py
-Sentiment prediction using a Hugging Face transformer model.
+─────────────────────────────────────────────────────────────────
+SentiStream AI — Local Model Predictor (v2.0)
 
-Model: cardiffnlp/twitter-roberta-base-sentiment-latest
-  — Outputs: Positive | Negative | Neutral (exact label strings)
-  — Fine-tuned on ~124M tweets; handles short headline/review text well
-  — Downloaded once on first use, then cached by HF Hub locally
+Replaces the HuggingFace RoBERTa pipeline with the locally trained
+TF-IDF + Logistic Regression model loaded via ModelLoader.
 
-Public API is identical to the old TF-IDF version:
-    predictor = Predictor()
-    result    = predictor.predict("This product is amazing!")
-    # → { "label": "Positive", "probabilities": {...}, "cleaned_text": "..." }
+• Loaded once at import time via @lru_cache singleton — zero cold-
+  start cost on repeated predictions.
+• predict()       → single text, returns label + probabilities dict
+• predict_batch() → list of texts, batched through sklearn for speed
+• Output schema is identical to the old HuggingFace predictor so
+  domain_router.py and all callers require zero changes.
+
+Label mapping (matches train_model.py):
+    Positive | Negative | Neutral
 """
 
 import logging
-import threading
-from typing import List
+import re
+from functools import lru_cache
+from typing import Dict, List
+
+from backend.model_loader import ModelLoader
+from backend.cleaner import TextCleaner, download_nltk_resources
 
 log = logging.getLogger("SentiStream.predictor")
 
-# ── Model config ──────────────────────────────────────────────────────
-_MODEL_NAME = "cardiffnlp/twitter-roberta-base-sentiment-latest"
-
-_LABEL_MAP = {
-    "positive":  "Positive",
-    "negative":  "Negative",
-    "neutral":   "Neutral",
-    "label_0":   "Negative",
-    "label_1":   "Neutral",
-    "label_2":   "Positive",
-}
-
-# ── True singleton — one pipeline for the entire process ──────────────
-# Using a module-level variable + lock instead of lru_cache to guarantee
-# a single instance even if _get_pipeline() is somehow imported from
-# multiple module paths (e.g. domain_router importing a different copy).
-_PIPELINE = None
-_PIPELINE_LOCK = threading.Lock()
+# ── Label normalisation map ────────────────────────────────────────
+# sklearn LabelEncoder sorts labels alphabetically, so classes are:
+#   0 → Negative, 1 → Neutral, 2 → Positive
+# These are the canonical display labels the frontend expects.
+_CANONICAL = {"Positive": "Positive", "Negative": "Negative", "Neutral": "Neutral"}
 
 
-def _normalise(raw: str) -> str:
-    """Canonical label: 'Positive' | 'Negative' | 'Neutral'."""
-    return _LABEL_MAP.get(raw.lower(), "Neutral")
+@lru_cache(maxsize=1)
+def _get_loader() -> ModelLoader:
+    """Load the model exactly once per process lifetime."""
+    loader = ModelLoader()
+    # Eagerly trigger both loads so the first prediction is fast
+    _ = loader.classifier
+    _ = loader.vectorizer
+    log.info(
+        "Local sentiment model ready. Classes: %s",
+        list(loader.label_encoder.classes_),
+    )
+    return loader
 
 
-def _resolve_device() -> int:
-    """
-    Return the transformers pipeline device integer.
-      0   → first CUDA GPU
-     -1   → CPU
+@lru_cache(maxsize=1)
+def _get_cleaner() -> TextCleaner:
+    """Return a shared TextCleaner instance (NLTK resources downloaded once)."""
+    download_nltk_resources()
+    return TextCleaner()
 
-    Explicitly NEVER returns a torch.device("meta") — meta tensors are
-    only for model analysis/tracing and will crash at inference time.
-    """
+
+def _clean(text: str) -> str:
+    """Lightweight fallback clean if TextCleaner is unavailable."""
     try:
-        import torch
-        if torch.cuda.is_available():
-            log.info("CUDA available — loading model on GPU 0")
-            return 0
+        return _get_cleaner().clean(text)
     except Exception:
-        pass
-    log.info("No CUDA — loading model on CPU")
-    return -1          # transformers pipeline API: -1 == CPU
+        return re.sub(r"[^\w\s]", " ", text.lower()).strip()
 
 
-def _get_pipeline():
+def _proba_dict(loader: ModelLoader, proba_row) -> Dict[str, float]:
     """
-    Return the HF pipeline singleton, building it once on first call.
-
-    Thread-safe: uses a module-level lock so concurrent requests during
-    cold-start don't race to build multiple pipelines.
-
-    IMPORTANT: we pass an explicit integer `device` and never use
-    `device_map` — device_map="auto" on machines with no GPU can route
-    to the "meta" device in newer versions of transformers/accelerate,
-    which produces placeholder tensors that crash on .item() calls.
+    Convert a sklearn predict_proba row into the probability dict the
+    frontend expects:  {"Positive": 72.3, "Negative": 18.1, "Neutral": 9.6}
+    Values are percentages (0–100), rounded to one decimal place.
     """
-    global _PIPELINE
-    if _PIPELINE is not None:
-        return _PIPELINE
-
-    with _PIPELINE_LOCK:
-        # Double-checked locking — another thread may have built it
-        # while we were waiting for the lock.
-        if _PIPELINE is not None:
-            return _PIPELINE
-
-        from transformers import (
-            AutoTokenizer,
-            AutoModelForSequenceClassification,
-            pipeline,
-        )
-        import torch
-
-        device_int = _resolve_device()
-
-        log.info("Loading tokenizer: %s", _MODEL_NAME)
-        tokenizer = AutoTokenizer.from_pretrained(_MODEL_NAME)
-
-        log.info("Loading model: %s", _MODEL_NAME)
-        # Load onto CPU first — safe regardless of environment.
-        model = AutoModelForSequenceClassification.from_pretrained(
-            _MODEL_NAME,
-            # Explicitly NO device_map — avoids accelerate routing to meta.
-        )
-
-        # Move to the target device after loading.
-        target = torch.device("cuda:0") if device_int == 0 else torch.device("cpu")
-        model = model.to(target)
-        model.eval()
-
-        log.info("Building pipeline on device=%s", target)
-        _PIPELINE = pipeline(
-            "text-classification",
-            model=model,
-            tokenizer=tokenizer,
-            top_k=None,       # return all class scores, not just top-1
-            truncation=True,
-            max_length=512,
-            device=device_int,
-            # NO device_map here — ever.
-        )
-
-        log.info("Pipeline ready.")
-        return _PIPELINE
+    classes = loader.label_encoder.classes_   # e.g. ['Negative', 'Neutral', 'Positive']
+    return {
+        _CANONICAL.get(cls, cls): round(float(p) * 100, 1)
+        for cls, p in zip(classes, proba_row)
+    }
 
 
 class Predictor:
     """
-    Wrapper around the HF transformer pipeline for real-time inference.
+    Drop-in replacement for the HuggingFace predictor.
 
-    All instances share the same underlying pipeline singleton so the
-    model is only loaded into memory once, no matter how many Predictor
-    objects are created across the codebase.
+    Public interface (unchanged):
+        predict(text)        → {"label": str, "probabilities": dict, "cleaned_text": str}
+        predict_batch(texts) → [{"label": str, "probabilities": dict}, ...]
     """
 
-    def __init__(self, loader=None, cleaner=None):
-        """
-        Args:
-            loader  : Ignored — kept for API compatibility.
-            cleaner : Optional TextCleaner; only used to populate
-                      cleaned_text in the result dict.
-        """
-        self._cleaner = cleaner
+    def __init__(self):
+        # Trigger eager load at construction time so the first API
+        # request doesn't pay the disk-read cost.
+        self._loader  = _get_loader()
+        self._cleaner = _get_cleaner()
 
-    # ── Internal ──────────────────────────────────────────────────────
+    # ── Single prediction ──────────────────────────────────────────
 
-    def _pipe(self):
-        """Always returns the process-global pipeline singleton."""
-        return _get_pipeline()
-
-    def _scores_to_dict(self, scores: List[dict]) -> dict:
+    def predict(self, text: str) -> Dict:
         """
-        Convert [{"label": "Positive", "score": 0.87}, ...] →
-        {"Positive": 87.0, "Negative": 8.5, "Neutral": 4.5}
-        """
-        result = {"Positive": 0.0, "Negative": 0.0, "Neutral": 0.0}
-        for s in scores:
-            label = _normalise(s["label"])
-            result[label] = round(float(s["score"]) * 100, 1)
-        return result
-
-    # ── Public API ────────────────────────────────────────────────────
-
-    def predict(self, text: str, pre_cleaned: bool = False) -> dict:
-        """
-        Predict sentiment for a single string.
+        Predict the sentiment of a single text string.
 
         Returns:
-            dict with keys: label, probabilities, cleaned_text
+            {
+                "label":        "Positive" | "Negative" | "Neutral",
+                "probabilities": {"Positive": float, "Negative": float, "Neutral": float},
+                "cleaned_text": str   # cleaned version used for inference
+            }
         """
-        if not text or not text.strip():
+        cleaned = _clean(text)
+        if not cleaned.strip():
             return {
                 "label":         "Neutral",
-                "probabilities": {"Neutral": 100.0, "Positive": 0.0, "Negative": 0.0},
-                "cleaned_text":  "",
+                "probabilities": {"Positive": 0.0, "Negative": 0.0, "Neutral": 100.0},
+                "cleaned_text":  cleaned,
             }
 
-        cleaned = self._cleaner.clean(text) if self._cleaner else text
-        scores  = self._pipe()(text)[0]          # pipeline returns List[List[dict]]
-        probs   = self._scores_to_dict(scores)
-        label   = max(probs, key=probs.__getitem__)
+        loader   = self._loader
+        vec      = loader.vectorizer.transform([cleaned])
+        proba    = loader.classifier.predict_proba(vec)[0]
+        label_id = proba.argmax()
+        label    = _CANONICAL.get(loader.label_encoder.classes_[label_id], "Neutral")
 
         return {
             "label":         label,
-            "probabilities": probs,
+            "probabilities": _proba_dict(loader, proba),
             "cleaned_text":  cleaned,
         }
 
-    def predict_batch(self, texts: List[str], pre_cleaned: bool = False) -> List[dict]:
-        """
-        Predict sentiment for a list of strings using native HF batching.
+    # ── Batch prediction ───────────────────────────────────────────
 
-        Returns:
-            List of dicts — same format as predict().
+    def predict_batch(self, texts: List[str]) -> List[Dict]:
+        """
+        Predict sentiment for a list of texts in one vectoriser pass.
+
+        Returns a list of dicts with the same schema as predict(), but
+        without "cleaned_text" (callers don't use it for batch results).
+
+        Throughput: typically > 1 000 texts/second on CPU.
         """
         if not texts:
             return []
 
-        empty_result = {
+        loader  = self._loader
+        cleaned = [_clean(t) for t in texts]
+
+        # Indices of empty strings — fall back to Neutral
+        empty_idx = {i for i, c in enumerate(cleaned) if not c.strip()}
+        non_empty = [(i, c) for i, c in enumerate(cleaned) if i not in empty_idx]
+
+        results: List[Dict] = [None] * len(texts)
+
+        # Fill empties
+        neutral_result = {
             "label":         "Neutral",
-            "probabilities": {"Neutral": 100.0, "Positive": 0.0, "Negative": 0.0},
-            "cleaned_text":  "",
+            "probabilities": {"Positive": 0.0, "Negative": 0.0, "Neutral": 100.0},
         }
+        for i in empty_idx:
+            results[i] = neutral_result.copy()
 
-        indices_to_run = [i for i, t in enumerate(texts) if t and t.strip()]
-        if not indices_to_run:
-            return [dict(empty_result) for _ in texts]
+        # Batch transform non-empty texts
+        if non_empty:
+            idxs, clean_texts = zip(*non_empty)
+            vec    = loader.vectorizer.transform(list(clean_texts))
+            probas = loader.classifier.predict_proba(vec)
 
-        texts_to_run  = [texts[i] for i in indices_to_run]
-        batch_scores  = self._pipe()(texts_to_run)   # List[List[dict]] when top_k=None
-
-        results: List[dict] = [dict(empty_result) for _ in texts]
-        for pos, idx in enumerate(indices_to_run):
-            probs  = self._scores_to_dict(batch_scores[pos])
-            label  = max(probs, key=probs.__getitem__)
-            cleaned = self._cleaner.clean(texts[idx]) if self._cleaner else texts[idx]
-            results[idx] = {
-                "label":         label,
-                "probabilities": probs,
-                "cleaned_text":  cleaned,
-            }
+            for i, proba_row in zip(idxs, probas):
+                label_id = proba_row.argmax()
+                label    = _CANONICAL.get(loader.label_encoder.classes_[label_id], "Neutral")
+                results[i] = {
+                    "label":         label,
+                    "probabilities": _proba_dict(loader, proba_row),
+                }
 
         return results

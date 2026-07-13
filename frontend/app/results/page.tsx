@@ -832,6 +832,8 @@ function ResultsContent() {
       setFetchError(null);
       setIsLoading(true);
 
+      console.log("NEXT_PUBLIC_API_URL =", process.env.NEXT_PUBLIC_API_URL);
+      console.log("API URL:", process.env.NEXT_PUBLIC_API_URL);
       const apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/analyze?domain=${domain}&topic=${encodeURIComponent(topic)}`;
       console.log("[SentiStream] Fetching:", apiUrl);
 

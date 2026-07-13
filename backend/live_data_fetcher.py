@@ -223,60 +223,12 @@ def fetch_movie_reviews(topic: str, max_results: int = 40) -> List[Dict]:
                 seen.add(clean_h)
                 unique.append(item)
 
-    if not unique:
-        return _mock_movie_reviews(topic, max_results=max_results)
-
+    # No synthetic or placeholder reviews for movies. If live review search
+    # returns nothing (rate limit, network issue, or a title with no online
+    # coverage yet), return an empty list. domain_router._analyze_movies()
+    # handles the empty case with a clean "no movie review data found"
+    # response, so the UI never displays fabricated review content.
     return unique[:max_results]
-
-
-def _mock_movie_reviews(topic: str, max_results: int = 40) -> List[Dict]:
-    """
-    Synthetic fallback reviews for a movie/TV show, used only when live
-    search returns no results.
-    """
-    templates = [
-        ("A cinematic triumph with stunning visuals",
-         f"{topic} delivers breathtaking visuals and an emotionally charged performance from its lead cast. "
-         f"The direction is bold and the screenplay keeps you engaged throughout."),
-        ("Phenomenal storytelling that grips you from start to finish",
-         f"The narrative arc of {topic} is masterfully constructed. "
-         f"Every episode (or act) raises the stakes, making it impossible to look away."),
-        ("Outstanding performances elevate the material",
-         f"The ensemble cast of {topic} is firing on all cylinders. "
-         f"Particularly the lead's portrayal brings unexpected depth to the character."),
-        ("A must-watch — sets a new benchmark for the genre",
-         f"{topic} redefines what the genre can achieve. "
-         f"The music, cinematography, and pacing all come together in a way rarely seen."),
-        ("Disappointing follow-up that fails to live up to expectations",
-         f"{topic} had enormous shoes to fill and unfortunately stumbles. "
-         f"The plot feels rushed and several character arcs are left unresolved."),
-        ("Overhyped and underwhelming",
-         f"Despite the marketing blitz, {topic} fails to deliver on its promise. "
-         f"The pacing drags in the second half and the climax feels anticlimactic."),
-        ("Weak writing undercuts strong performances",
-         f"The cast of {topic} gives their best, but the screenplay lets them down. "
-         f"Clichéd dialogue and predictable twists reduce the overall impact."),
-        ("A competent but forgettable entry",
-         f"{topic} is watchable but leaves no lasting impression. "
-         f"It hits the expected beats without taking any creative risks."),
-        ("Mixed bag — brilliant moments buried in filler",
-         f"{topic} has genuine highs but the uneven pacing and excessive runtime work against it. "
-         f"Worth watching for fans, but casual viewers may lose patience."),
-        ("Solid entertainment with a few rough edges",
-         f"{topic} is an enjoyable watch overall. "
-         f"The action sequences impress and the leads have real chemistry, even if the supporting story feels thin."),
-    ]
-
-    items: List[Dict] = []
-    for headline, summary in templates[:max_results]:
-        items.append({
-            "headline": headline,
-            "summary": summary,
-            "url": "",
-            "source": "Entertainment Review",
-            "text": f"{headline}. {summary}",
-        })
-    return items
 
 
 def _mock_restaurant_reviews(topic: str, max_results: int = 40) -> List[Dict]:

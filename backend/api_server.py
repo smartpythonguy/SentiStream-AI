@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from domain_router import analyze_topic
+from backend.domain_router import analyze_topic
 
 app = FastAPI()
 
