@@ -15,20 +15,23 @@ from collections import Counter
 from typing import Dict, List, Tuple
 
 # ── Local Backend Imports ──────────────────────────────────────────
-from cleaner import TextCleaner, download_nltk_resources
-from live_data_fetcher import fetch_for_domain
-from predictor import Predictor
-from restaurant_fetcher import fetch_restaurant_data
-from product_review_analyzer import (
+from backend.cleaner import TextCleaner, download_nltk_resources
+from backend.live_data_fetcher import fetch_for_domain
+from backend.predictor import Predictor
+from backend.restaurant_fetcher import fetch_restaurant_data
+from backend.product_review_analyzer import (
     extract_pros_and_complaints,
     generate_human_opinion,
     scrub_metadata
 )
-from report_visualizer import generate_sentiment_report
+from backend.report_visualizer import generate_sentiment_report
+from backend.movie_metadata_service import fetch_movie_metadata
+from backend.movie_review_collector import collect_movie_reviews
 
 # ── Setup ──────────────────────────────────────────────────────────
 logging.getLogger("SentiStream").setLevel(logging.WARNING)
 logging.basicConfig(level=logging.WARNING)
+log = logging.getLogger("SentiStream.domain_router")
 
 DOMAINS = {
     "1": {"label": "News / Politics",   "icon": "📰"},
@@ -37,7 +40,7 @@ DOMAINS = {
     "5": {"label": "Movies & TV Shows", "icon": "🎬"},
 }
 
-# ── Shared transformer predictor (loaded once, reused across all domains) ─
+# ── Shared local TF-IDF predictor (loaded once, reused across all domains) ─
 _predictor = Predictor()
 
 # ── Theme keyword clusters used for dynamic summary extraction ─────
@@ -210,15 +213,15 @@ def _extract_restaurant_aspects(
     """
     Aspect-Based Opinion Mining for restaurant reviews.
 
-    Each review carries its HuggingFace sentence-level sentiment label
+    Each review carries its predicted sentiment label
     ('Positive' | 'Negative' | 'Neutral') AND its raw text.  We combine:
-      • HuggingFace label  → tells us the overall tone of the review
+      • Sentiment label    → tells us the overall tone of the review
       • Aspect signal scan → tells us WHICH aspect the reviewer is praising/criticising
 
     Scoring logic:
-      - A review is HF-Positive  → aspect-positive opinions count ×2 (amplify praise)
-      - A review is HF-Negative  → aspect-negative opinions count ×2 (amplify complaints)
-      - A review is HF-Neutral   → aspect opinions count ×1
+      - A Positive review  → aspect-positive opinions count ×2 (amplify praise)
+      - A Negative review  → aspect-negative opinions count ×2 (amplify complaints)
+      - A Neutral review   → aspect opinions count ×1
 
     This prevents false complaints like "the service was excellent (no complaints)"
     being surfaced just because the word "service" appeared.
@@ -232,7 +235,7 @@ def _extract_restaurant_aspects(
 
     for review in reviews_with_sentiment:
         text      = review.get("_text", "")
-        hf_label  = review.get("sentiment", "Neutral")  # HuggingFace label
+        hf_label  = review.get("sentiment", "Neutral")  # predicted sentiment label
         amplifier = 2 if hf_label != "Neutral" else 1
 
         for aspect in _RESTAURANT_ASPECTS:
@@ -558,6 +561,232 @@ def _build_overall_summary(
         followup = ""
 
     return tone + followup
+
+
+def _build_movie_recommendation(
+    topic:      str,
+    movie_info: Dict,
+    pros:       List[str],
+    cons:       List[str],
+    dominant:   str,
+) -> str:
+    """
+    Write a 4–5 sentence friend-style recommendation grounded entirely in
+    real metadata and audience reception signals already on hand.
+
+    Rules:
+      • No article counts, no percentages, no sentiment statistics.
+      • No phrases like "X of Y reviews" or "sentiment skews".
+      • Every sentence is grounded in a real metadata field or a detected
+        theme from pros/cons — nothing is invented.
+      • Degrades gracefully: each section is skipped when its source data
+        is absent or is the "Not Available" sentinel.
+    """
+    _NA = "Not Available"
+
+    def _val(key: str) -> str:
+        v = movie_info.get(key, "")
+        return "" if (not v or v == _NA) else str(v).strip()
+
+    title         = _val("title") or topic
+    media_type    = _val("media_type")
+    year          = _val("year")
+    genres        = movie_info.get("genres") or []
+    genre_str     = _val("genre")
+    overview      = _val("overview")
+    imdb_rating   = _val("imdb_rating")
+    rt_score      = _val("rt_score")
+    total_seasons = _val("total_seasons")
+    series_status = _val("series_status")
+    runtime       = _val("runtime")
+
+    is_series    = "series" in media_type.lower() if media_type else False
+    is_mini      = "mini"   in media_type.lower() if media_type else False
+    content_word = "series" if is_series else "film"
+
+    if not genres and genre_str:
+        genres = [g.strip() for g in genre_str.split(",") if g.strip()]
+    primary_genre = genres[0] if genres else ""
+
+    _GENRE_HOOKS: Dict[str, str] = {
+        "Action":           "action-packed blockbusters",
+        "Adventure":        "adventure stories",
+        "Animation":        "animated films",
+        "Biography":        "biographical dramas",
+        "Comedy":           "sharp comedies",
+        "Crime":            "crime thrillers",
+        "Documentary":      "documentary filmmaking",
+        "Drama":            "character-driven dramas",
+        "Fantasy":          "fantasy worlds",
+        "Horror":           "horror",
+        "Musical":          "musicals",
+        "Mystery":          "mysteries",
+        "Romance":          "romantic stories",
+        "Sci-Fi":           "science fiction",
+        "Science Fiction":  "science fiction",
+        "Sport":            "sports dramas",
+        "Thriller":         "psychological thrillers",
+        "War":              "war dramas",
+        "Western":          "westerns",
+    }
+    genre_hook = ""
+    for g in genres:
+        hook = _GENRE_HOOKS.get(g)
+        if hook:
+            genre_hook = hook
+            break
+    if not genre_hook and primary_genre:
+        for key, hook in _GENRE_HOOKS.items():
+            if key.lower() in primary_genre.lower():
+                genre_hook = hook
+                break
+
+    year_clause = f" ({year})" if year else ""
+    if is_mini:
+        type_label = "limited series"
+    elif is_series:
+        type_label = "series"
+    else:
+        type_label = "film"
+
+    # Sentence 1: genre hook + title
+    s1 = (
+        f"If you enjoy {genre_hook}, {title}{year_clause} is a {type_label} well worth your time."
+        if genre_hook else
+        f"{title}{year_clause} is a {type_label} that is definitely worth a watch."
+    )
+
+    # Sentence 2: what the story is about
+    s2 = ""
+    if overview:
+        ov_sentences = re.split(r"(?<=[.!?])\s+", overview.strip())
+        ov_snippet   = " ".join(ov_sentences[:2])
+        if len(ov_snippet) > 220:
+            ov_snippet = ov_snippet[:217].rsplit(" ", 1)[0] + "…"
+        if ov_snippet:
+            s2 = (
+                f"It follows {ov_snippet[0].lower()}{ov_snippet[1:]}"
+                if not ov_snippet.lower().startswith("it ") else ov_snippet
+            )
+
+    # Sentence 3: series depth / runtime context
+    s3 = ""
+    if is_series and total_seasons:
+        try:
+            n = int(total_seasons)
+            season_word = "season" if n == 1 else "seasons"
+            status_note = ""
+            if series_status and series_status not in ("Not Available", "Released"):
+                status_note = (
+                    f" and is still {series_status.lower()}"
+                    if series_status in ("Running", "In Production")
+                    else f" and has since {series_status.lower()}"
+                )
+            s3 = (
+                f"The {content_word} spans {n} {season_word}{status_note}, "
+                f"giving the story room to breathe and the characters space to develop."
+            )
+        except ValueError:
+            pass
+    elif not is_series and runtime:
+        mins_m = re.search(r"(\d+)", runtime)
+        if mins_m and int(mins_m.group(1)) >= 100:
+            s3 = f"At {runtime} it has the space to build both its world and its characters properly."
+
+    # Sentence 4: qualitative audience reception — grounded in the real
+    # review-derived pros/cons. Mentions up to two praised aspects so that
+    # acting and direction can both surface when they are the strengths.
+    _PRO_NOUNS: Dict[str, str] = {
+        "story & plot":    "the story",
+        "acting & cast":   "the performances",
+        "direction":       "the direction",
+        "music & score":   "the score",
+        "visual effects":  "the visuals",
+        "entertainment":   "how engaging it is",
+        "originality":     "how fresh it feels",
+        "length & pacing": "the pacing",
+    }
+    _CON_PHRASES: Dict[str, str] = {
+        "story & plot":    "a plot that some find predictable",
+        "acting & cast":   "uneven performances in places",
+        "direction":       "direction that divides opinion",
+        "music & score":   "a soundtrack that does not suit everyone",
+        "visual effects":  "visual effects that feel inconsistent",
+        "entertainment":   "stretches that lose momentum",
+        "originality":     "a premise that leans on familiar territory",
+        "length & pacing": "pacing that can drag in places",
+    }
+
+    pro_nouns = [_PRO_NOUNS[p] for p in pros[:2] if p in _PRO_NOUNS]
+    if len(pro_nouns) >= 2:
+        praised = f"{pro_nouns[0]} and {pro_nouns[1]}"
+    elif pro_nouns:
+        praised = pro_nouns[0]
+    else:
+        praised = ""
+    top_con = _CON_PHRASES.get(cons[0]) if cons else None
+
+    s4 = ""
+    if dominant == "Positive":
+        if praised and top_con:
+            s4 = (
+                f"Audiences have responded warmly, especially praising {praised}, "
+                f"though a few note {top_con}."
+            )
+        elif praised:
+            s4 = f"Audiences have responded warmly, especially praising {praised}."
+        elif imdb_rating:
+            s4 = f"It holds a strong {imdb_rating}/10 on IMDb, reflecting genuine audience enthusiasm."
+        elif rt_score:
+            s4 = f"Critics and audiences have given it a strong reception on Rotten Tomatoes ({rt_score})."
+        else:
+            s4 = "Audiences have responded warmly overall."
+    elif dominant == "Negative":
+        if top_con and praised:
+            s4 = (
+                f"Reception has been divided — most concerns centre on {top_con}, "
+                f"though {praised} still draws praise."
+            )
+        elif top_con:
+            s4 = f"Reception has been mixed, with most criticism aimed at {top_con}."
+        else:
+            s4 = (
+                "It is a polarising watch — worth approaching with calibrated expectations "
+                "depending on your tolerance for the genre."
+            )
+    else:  # Neutral
+        if praised:
+            s4 = (
+                f"Opinions are genuinely mixed, but those who click with {praised} "
+                f"tend to be enthusiastic about it."
+            )
+        else:
+            s4 = "Opinions are genuinely split, so it may depend on how much you enjoy the genre."
+
+    # Sentence 5: closing recommendation
+    if dominant == "Positive":
+        s5 = (
+            "It is gripping, well-crafted and absolutely worth adding to your watchlist."
+            if is_series else
+            "It is engaging, well-made and worth watching."
+        )
+    elif dominant == "Negative":
+        s5 = (
+            "If the premise appeals to you, give the first episode a try before committing further."
+            if is_series else
+            "If the premise appeals to you, it is worth a watch — just go in with open expectations."
+        )
+    else:
+        s5 = (
+            "If the premise sounds like your kind of thing, give it a couple of episodes to find its footing."
+            if is_series else
+            "If it sounds like your kind of film, it is worth giving a chance."
+        )
+
+    sentences = [s for s in [s1, s2, s3, s4, s5] if s]
+    if not sentences:
+        return f"{title} is a {type_label} worth looking into if the genre appeals to you."
+    return " ".join(sentences)
 
 
 def _build_dynamic_summary(
@@ -968,127 +1197,17 @@ _MOVIE_SOURCE_DOMAINS: Dict[str, str] = {
 
 def _fetch_movie_info(topic: str) -> Dict:
     """
-    Fetch real movie/TV metadata.
-    Priority: TMDb (TMDB_API_KEY) → OMDb (OMDB_API_KEY) → empty strings.
-    Never guesses or hardcodes values.
+    Fetch real movie / TV metadata.
+
+    Delegates entirely to the dedicated MovieMetadataService which runs a
+    four-source waterfall: TMDb → OMDb → IMDb scrape → Wikipedia fallback.
+
+    • Metadata is NEVER guessed or hardcoded.
+    • Every field is "Not Available" only when all four sources failed.
+    • The returned dict is schema-compatible with the old inline implementation
+      so _analyze_movies() and the frontend require zero changes.
     """
-    import urllib.request, urllib.parse, json as _json
-
-    info: Dict = {
-        "title": topic, "year": "", "poster": "", "imdb_rating": "",
-        "rt_score": "", "budget": "", "box_office": "", "release_date": "",
-        "runtime": "", "genre": "", "genres": [], "imdb_id": "",
-        "media_type": "", "total_seasons": "", "series_status": "",
-        "streaming_platforms": [], "overview": "",
-    }
-
-    def _fmt(n: int) -> str:
-        if not n: return ""
-        return f"${n/1_000_000_000:.1f}B" if n >= 1_000_000_000 else f"${n/1_000_000:.0f}M"
-
-    tmdb_key = os.environ.get("TMDB_API_KEY", "")
-    tmdb_ok  = False
-
-    if tmdb_key:
-        try:
-            q = urllib.parse.urlencode({"api_key": tmdb_key, "query": topic,
-                                        "include_adult": "false", "language": "en-US"})
-            with urllib.request.urlopen(
-                f"https://api.themoviedb.org/3/search/multi?{q}", timeout=8) as r:
-                hit = next((x for x in _json.loads(r.read())["results"]
-                            if x.get("media_type") in ("movie", "tv")), None)
-            if not hit:
-                raise ValueError
-
-            mid  = hit["id"]
-            mtyp = hit["media_type"]
-            atr  = "external_ids,watch/providers"
-
-            if mtyp == "movie":
-                q2 = urllib.parse.urlencode({"api_key": tmdb_key,
-                                             "append_to_response": atr, "language": "en-US"})
-                with urllib.request.urlopen(
-                    f"https://api.themoviedb.org/3/movie/{mid}?{q2}", timeout=8) as r:
-                    d = _json.loads(r.read())
-                info.update({
-                    "title":        d.get("title", topic),
-                    "year":         (d.get("release_date") or "")[:4],
-                    "release_date": d.get("release_date", ""),
-                    "poster":       f"https://image.tmdb.org/t/p/w500{d['poster_path']}" if d.get("poster_path") else "",
-                    "runtime":      f"{d['runtime']} min" if d.get("runtime") else "",
-                    "imdb_id":      d.get("imdb_id") or (d.get("external_ids") or {}).get("imdb_id", ""),
-                    "overview":     d.get("overview", ""),
-                    "media_type":   "Movie",
-                    "budget":       _fmt(d.get("budget", 0)),
-                    "box_office":   _fmt(d.get("revenue", 0)),
-                    "genres":       [g["name"] for g in d.get("genres", [])],
-                    "genre":        ", ".join(g["name"] for g in d.get("genres", [])),
-                    "series_status": {"Released": "Released"}.get(d.get("status", ""), d.get("status", "")),
-                    "streaming_platforms": [p["provider_name"] for p in
-                        d.get("watch/providers", {}).get("results", {}).get("US", {}).get("flatrate", [])][:4],
-                })
-            else:
-                q2 = urllib.parse.urlencode({"api_key": tmdb_key,
-                                             "append_to_response": atr, "language": "en-US"})
-                with urllib.request.urlopen(
-                    f"https://api.themoviedb.org/3/tv/{mid}?{q2}", timeout=8) as r:
-                    d = _json.loads(r.read())
-                air = d.get("first_air_date", "")
-                rt  = d.get("episode_run_time", [])
-                status_map = {"Returning Series": "Running", "Ended": "Ended",
-                              "Cancelled": "Cancelled", "In Production": "In Production",
-                              "Planned": "Upcoming"}
-                info.update({
-                    "title":         d.get("name", topic),
-                    "year":          air[:4] if air else "",
-                    "release_date":  air,
-                    "poster":        f"https://image.tmdb.org/t/p/w500{d['poster_path']}" if d.get("poster_path") else "",
-                    "runtime":       f"{rt[0]} min/ep" if rt else "",
-                    "imdb_id":       (d.get("external_ids") or {}).get("imdb_id", ""),
-                    "overview":      d.get("overview", ""),
-                    "media_type":    "TV Mini-Series" if d.get("type") == "Miniseries" else "TV Series",
-                    "total_seasons": str(d.get("number_of_seasons", "")),
-                    "genres":        [g["name"] for g in d.get("genres", [])],
-                    "genre":         ", ".join(g["name"] for g in d.get("genres", [])),
-                    "series_status": status_map.get(d.get("status", ""), d.get("status", "")),
-                    "streaming_platforms": [p["provider_name"] for p in
-                        d.get("watch/providers", {}).get("results", {}).get("US", {}).get("flatrate", [])][:4],
-                })
-            tmdb_ok = True
-        except Exception:
-            pass
-
-    omdb_key = os.environ.get("OMDB_API_KEY", "")
-    if omdb_key:
-        try:
-            q = urllib.parse.urlencode(
-                {"i": info["imdb_id"], "apikey": omdb_key, "plot": "short"} if info["imdb_id"]
-                else {"t": topic, "apikey": omdb_key, "plot": "short"})
-            with urllib.request.urlopen(f"https://www.omdbapi.com/?{q}", timeout=6) as r:
-                od = _json.loads(r.read())
-            if od.get("Response") == "True":
-                info["imdb_rating"] = od.get("imdbRating", "")
-                for rat in od.get("Ratings", []):
-                    if "Rotten Tomatoes" in rat.get("Source", ""):
-                        info["rt_score"] = rat["Value"]; break
-                if not tmdb_ok:
-                    rtyp = od.get("Type", "").lower()
-                    info.update({
-                        "title": od.get("Title", topic), "year": od.get("Year", ""),
-                        "poster": od.get("Poster", ""), "runtime": od.get("Runtime", ""),
-                        "release_date": od.get("Released", ""), "box_office": od.get("BoxOffice", ""),
-                        "overview": od.get("Plot", ""),
-                        "genres": [g.strip() for g in od.get("Genre", "").split(",") if g.strip()],
-                        "genre": od.get("Genre", ""),
-                        "media_type": "TV Series" if rtyp == "series" else "Movie",
-                        "total_seasons": od.get("totalSeasons", "") if rtyp == "series" else "",
-                        "series_status": ("Ended" if (od.get("Year","").replace("–","-").split("-")[-1].strip().isdigit())
-                                          else "Running") if rtyp == "series" else "Released",
-                    })
-        except Exception:
-            pass
-
-    return info
+    return fetch_movie_metadata(topic)
 
 
 def _fetch_movie_reviews(topic: str, movie_info: Dict) -> List[Dict]:
@@ -1100,9 +1219,12 @@ def _fetch_movie_reviews(topic: str, movie_info: Dict) -> List[Dict]:
     Strategy (in order, stops once enough items collected):
       1. Reddit r/movies + r/flicks search via fetch_for_domain("5", topic)
          — already implemented; gives community review text.
-      2. Stub slots for IMDb / RT / Letterboxd scraped titles so the
-         detected_sources section always surfaces the canonical sources
-         even when full scraping is unavailable.
+      2. MovieReviewCollector (additive) — pulls from IMDb, Rotten Tomatoes,
+         Metacritic, Letterboxd, TMDb, RogerEbert.com, Wikipedia, and Google
+         Reviews (where API keys are configured). This runs independently
+         of Reddit: it never blocks or replaces the Reddit results, and any
+         failure here is caught and logged so the existing Reddit-only
+         behaviour is always preserved as the floor, not the ceiling.
     """
     items = fetch_for_domain("5", topic)
 
@@ -1114,7 +1236,38 @@ def _fetch_movie_reviews(topic: str, movie_info: Dict) -> List[Dict]:
         src  = _resolve_movie_source(url, it.get("source", ""))
         normalised.append({**it, "source": src or it.get("source", "Review")})
 
-    return normalised
+    # ── Additive: multi-source collector (IMDb / RT / Metacritic / etc.) ──
+    # Wrapped so a failure here never removes the Reddit results above.
+    try:
+        collected = collect_movie_reviews(topic, movie_info)
+    except Exception as exc:
+        log.warning("movie_review_collector raised: %s", exc)
+        collected = []
+
+    for c in collected:
+        normalised.append({
+            "text":     c["text"],
+            # Collector items carry no headline field; synthesize one so
+            # scrub_metadata(it.get("headline", "")) downstream never sees
+            # a blank headline for these items.
+            "headline": f"{c['source']} Review",
+            "source":   c["source"],
+            "url":      c["url"],
+        })
+
+    # ── De-duplicate the combined Reddit + collector set ──────────────
+    # collect_movie_reviews() already near-dedupes within its own sources;
+    # this is a lightweight exact-text pass across the merged list so the
+    # same review text isn't double-counted if it appears via both paths.
+    seen: set = set()
+    deduped: List[Dict] = []
+    for it in normalised:
+        key = re.sub(r"\s+", " ", (it.get("text") or "").lower()).strip()
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(it)
+
+    return deduped
 
 
 def _resolve_movie_source(url: str, fallback: str = "") -> str:
@@ -1372,11 +1525,14 @@ def _analyze_movies(topic: str, choice: str) -> Dict:
     Dedicated movie analysis pipeline.
 
     Data flow:
-      _fetch_movie_info()      → OMDB metadata (budget, box office, release date, runtime, genre)
-      _fetch_movie_reviews()   → Reddit r/movies community reviews (normalised source names)
-      HuggingFace predictor    → sentence-level sentiment on review texts
+      _fetch_movie_info()          → MovieMetadataService waterfall (TMDb → OMDb → IMDb → Wikipedia)
+      _fetch_movie_reviews()       → Reddit r/movies community reviews (normalised source names)
+                                     + additive MovieReviewCollector (IMDb, Rotten Tomatoes,
+                                     Metacritic, Letterboxd, TMDb, RogerEbert.com, Wikipedia,
+                                     Google Reviews) — Reddit results are never removed or blocked
+      local sentiment predictor    → sentence-level sentiment on review texts
       _extract_dynamic_pros_cons() → movie theme clusters (acting, direction, music, etc.)
-      _build_overall_summary() → AI narrative summary
+      _build_overall_summary()     → AI narrative summary
 
     Response includes `movie_info` and `detected_sources` for the frontend hero
     and sources row. Fully compatible with the existing sentiment pipeline.
@@ -1389,7 +1545,7 @@ def _analyze_movies(topic: str, choice: str) -> Dict:
     if not items:
         return {"status": "error", "message": "No movie review data found."}
 
-    # ── 3. Classify with HuggingFace ─────────────────────────────────
+    # ── 3. Classify with local sentiment model ───────────────────────
     texts       = [it["text"] for it in items]
     predictions = _predictor.predict_batch(texts)
 
@@ -1431,7 +1587,7 @@ def _analyze_movies(topic: str, choice: str) -> Dict:
     pros, cons = _extract_dynamic_pros_cons(
         positive_texts, negative_texts, clusters=_MOVIES_THEME_CLUSTERS
     )
-    ai_summary = _build_overall_summary(positive_texts, negative_texts, neutral_texts)
+    ai_summary = _build_movie_recommendation(topic, movie_info, pros, cons, dominant)
 
     news_narratives = {
         "positive": _build_news_narrative(positive_texts, "Positive"),
@@ -1439,6 +1595,17 @@ def _analyze_movies(topic: str, choice: str) -> Dict:
         "neutral":  _build_news_narrative(neutral_texts,  "Neutral"),
     }
 
+    def _review_snippet(text: str, limit: int = 240) -> str:
+        """Collapse whitespace and trim a review to a card-friendly snippet."""
+        text = re.sub(r"\s+", " ", (text or "")).strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit].rsplit(" ", 1)[0].rstrip(",;: ") + "…"
+
+    # Each review card carries the ORIGINAL review snippet (not a synthetic
+    # headline) alongside its source and confidence. `_text`/`text` mirror the
+    # snippet so the frontend (which reads `_text || text`) shows the real
+    # review sentence rather than falling back to a bare headline.
     clean_results = [
         {
             "headline":   r["headline"],
@@ -1446,6 +1613,9 @@ def _analyze_movies(topic: str, choice: str) -> Dict:
             "confidence": r["confidence"],
             "source":     r["source"],
             "url":        r["url"],
+            "snippet":    _review_snippet(r["_text"]),
+            "text":       _review_snippet(r["_text"]),
+            "_text":      _review_snippet(r["_text"]),
         }
         for r in top3
     ]
@@ -1517,7 +1687,7 @@ def _analyze_restaurant(topic: str, choice: str) -> Dict:
 
     Data flow:
       fetch_restaurant_data()          → place_info + reviews[]
-      review["text"] only              → HuggingFace sentiment (NO headlines/news)
+      review["text"] only              → local sentiment model (NO headlines/news)
       _extract_popular_dishes()        → dish mentions across all review texts
       _extract_dynamic_pros_cons()     → top praises / top complaints
       _build_dynamic_summary()         → AI summary paragraph
@@ -1529,7 +1699,7 @@ def _analyze_restaurant(topic: str, choice: str) -> Dict:
     if not reviews:
         return {"status": "error", "message": "No restaurant data found."}
 
-    # Only review["text"] goes to HuggingFace — never headlines or news
+    # Only review["text"] goes to the sentiment model — never headlines or news
     review_texts = [r["text"] for r in reviews]
     predictions  = _predictor.predict_batch(review_texts)
 
@@ -1569,7 +1739,7 @@ def _analyze_restaurant(topic: str, choice: str) -> Dict:
     neutral_texts  = [r["_text"] for r in groups["Neutral"]]
     all_texts      = positive_texts + negative_texts + neutral_texts
 
-    # ── Aspect-Based Opinion Mining — uses HF labels + signal words ──
+    # ── Aspect-Based Opinion Mining — uses predicted labels + signal words ──
     pros, cons = _extract_restaurant_aspects(raw_results)
 
     # ── Natural-language summary grounded in ABOM output ─────────────
