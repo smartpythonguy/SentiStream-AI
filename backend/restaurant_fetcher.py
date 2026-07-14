@@ -9,9 +9,11 @@ Tertiary : TripAdvisor scrape (reviews, rating)
 
 All three sources normalise reviews into a single common schema:
     {
-        "text":     str,   # review body → fed to HuggingFace sentiment pipeline
+        "text":     str,   # review body → fed to the local sentiment model
         "headline": str,   # short label shown in UI ("Google Review", etc.)
         "rating":   float | None,
+        "author":   str,   # reviewer name when the source exposes it, else ""
+        "date":     str,   # relative date ("2 months ago") when available, else ""
         "source":   str,   # "Google" | "JustDial" | "TripAdvisor"
         "url":      str,
     }
@@ -175,6 +177,8 @@ def _parse_google_result(result: Dict, restaurant_name: str) -> Tuple[Dict, List
             "text":     body,
             "headline": f"Google Review — {star}★" if star else "Google Review",
             "rating":   float(star) if star else None,
+            "author":   _clean(r.get("author_name", "")),
+            "date":     _clean(r.get("relative_time_description", "")),
             "source":   "Google",
             "url":      maps_url,
         })
@@ -296,11 +300,13 @@ def fetch_restaurant_data(name: str) -> Dict:
     """
     Master entry point for the Restaurant domain.
 
-    Priority order:
-      1. Google Places API  → place_info + up to 5 reviews
+    Priority order (all live, real sources — no synthetic data):
+      1. Google Places API  → place_info + up to 5 reviews (with author + date)
       2. JustDial scrape    → up to 10 additional reviews
       3. TripAdvisor scrape → up to 10 additional reviews
-      4. Synthetic fallback → 10 mock reviews if all live sources fail
+
+    If every source returns nothing, `reviews` is empty and the caller renders
+    a clean "no data" state — reviews are never fabricated.
 
     Returns:
         {
@@ -310,9 +316,11 @@ def fetch_restaurant_data(name: str) -> Dict:
             },
             "reviews": [
                 {
-                    "text":     str,    ← ONLY this field is fed to HuggingFace
+                    "text":     str,    ← ONLY this field is fed to the model
                     "headline": str,
                     "rating":   float | None,
+                    "author":   str,
+                    "date":     str,
                     "source":   str,
                     "url":      str,
                 },
@@ -342,10 +350,19 @@ def fetch_restaurant_data(name: str) -> Dict:
     except Exception as exc:
         log.warning("TripAdvisor error: %s", exc)
 
-    # 4. Synthetic fallback
-    if not all_reviews:
-        log.warning("All live sources empty — using synthetic fallback for '%s'", name)
-        all_reviews = _synthetic_reviews(name)
+    # NOTE: No synthetic fallback. If every live source returns nothing we keep
+    # all_reviews empty; domain_router._analyze_restaurant() turns that into a
+    # clean "No restaurant data found" response, so the UI never displays
+    # fabricated reviews.
+
+    # Normalise schema: guarantee every review carries the optional display
+    # fields the frontend renders (author / date / rating), defaulting to empty
+    # so missing values are hidden rather than faked.
+    for r in all_reviews:
+        r.setdefault("author", "")
+        r.setdefault("date", "")
+        r.setdefault("rating", None)
+        r.setdefault("headline", f"{r.get('source', 'Customer')} Review")
 
     # Minimal stub when Google Places unavailable
     if place_info is None:
@@ -373,55 +390,3 @@ def fetch_restaurant_data(name: str) -> Dict:
             deduped.append(r)
 
     return {"place_info": place_info, "reviews": deduped}
-
-
-# ── Synthetic fallback ────────────────────────────────────────────────────────
-
-def _synthetic_reviews(name: str) -> List[Dict]:
-    """
-    10 realistic synthetic reviews (mixed sentiment).
-    Used only when every live source returns nothing.
-    These are review bodies only — no news headlines anywhere.
-    """
-    templates = [
-        ("Amazing food and great service",
-         f"The food at {name} was absolutely delicious. The biryani was perfectly spiced "
-         f"and portions were generous. Staff were friendly and attentive throughout."),
-        ("Fantastic weekend dinner",
-         f"Visited {name} on Saturday evening. The kebabs were tender and full of flavour, "
-         f"the ambience was warm and the place was clean. Highly recommend."),
-        ("Good food but overpriced",
-         f"Food quality at {name} was solid — the curries were rich and well-seasoned. "
-         f"However, the prices felt steep for the portion sizes you get."),
-        ("Slow service ruined the meal",
-         f"Waited almost 40 minutes for our order at {name}. The food was decent once it "
-         f"arrived but slow service was frustrating, especially on a busy evening."),
-        ("Lukewarm delivery order",
-         f"Ordered a takeaway from {name} and the food arrived barely warm. "
-         f"The packaging was inadequate and the biryani had lost its texture."),
-        ("Decent, nothing memorable",
-         f"{name} is a fine option for a quick meal. The menu covers the usual staples "
-         f"and seating is comfortable, but nothing stood out as exceptional."),
-        ("Great value for money",
-         f"Portion sizes at {name} are very generous and prices are reasonable. "
-         f"Dal makhani and naan were particularly good. Will definitely return."),
-        ("Staff needs better training",
-         f"The food at {name} was tasty but our waiter was inattentive and got part of "
-         f"our order wrong. Management should focus on improving service consistency."),
-        ("Hygiene concerns",
-         f"Tables at {name} were sticky and the restroom needed attention. "
-         f"The food tasted fine but the cleanliness really put us off."),
-        ("Perfect family lunch spot",
-         f"Took the whole family to {name} on Sunday. Kids loved the food, "
-         f"staff were patient and accommodating, and the menu variety was impressive."),
-    ]
-    return [
-        {
-            "text":     f"{headline}. {body}",
-            "headline": headline,
-            "rating":   None,
-            "source":   "Synthetic Review",
-            "url":      "",
-        }
-        for headline, body in templates
-    ]
